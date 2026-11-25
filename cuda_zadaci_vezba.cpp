@@ -89,8 +89,118 @@ int main(){
     return 0; // Uspešan završetak programa
 }
 
+//Koriscenjem cuda tehnologije, u programskom jeziku C/C++ napisati program koji nalazi minimalni element na glavnoj
+//dijagonali kvadratne matrice Anxn. Obratiti paznju na efikasnost paralelizacije. Omogucuti pozivanje kernela za 
+//proizvoljnu velicinu matrice.
+#include stdio.h
+#include stdlib.h
+#include cuda_runtime.h
 
+#define velicina_bloka 256
 
+__global__ void midElDijagonaleRedukcijom(const float* A, float* blokMinimum, int n) {
+    __shared__ float sdata[velicina_bloka];
 
+    int tid = threadIdx.x;  //lokalni Id niti unutar bloka (0...255)
+    int i = blockIdx.x * blockDim.x + threadIdx.x; //Globalni Id niti unutar bloka (indeks elementa na dijagonali)
 
+    if (i < n){
+        sdata[tid]= A[i*n+i];
+    } else {
+        sdata[tid]= FLT_MAX;
+    }
+    __syncthreads();
 
+    //paralelna redukcija
+    for (korak = blockDim.x / 2; korak > 0; korak >>= 1) {
+        if (tid < korak) { // znaci za 16 4x4 bice korak=8 imacemo tid=8 vrednosti
+            if(sdata[tid+korak] < sdata[tid]) {
+                sdata[tid] = sdata[tid+korak];
+            }
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0){
+        blokMinimum[blockIdx.x] = sdata[0]
+    }
+}
+
+__global__ void ukolikoJeVelicinaMatriceVecaOdJednogBloka(const float* ulaz, const float* izlaz, int duzina){
+    __shared__ float sdata[velicina_bloka];
+    int tid = threadIdx.x;  //indeks niti u bloku
+    int i = blockIdx.x * blockDim.x + threadIdx.x; // indeks niti u matrici
+
+    if (i < duzina){
+        sdata[tid] = A[i*n+i];
+    } else {
+        sdata[tid] = A[FULL_MAX];
+    }
+    __syncthreads();
+
+    //paralelna redukcija
+    for (korak = blockDim.x/2: korak > 0: korak <<1) {  // 
+        if (sdata[tid] + korak < sdata[tid]) sdata[tid] = sdata[tid+korak];
+    }
+    __syncthreads();
+    if (tid ==0) {
+        izlaz[blockIdx.x] = sdata[0];
+    }
+}
+
+int main(){
+    int n=5;    //kvadratna matrica 5x5
+    size_t velicinaMatrice = n*n*sizeof(float);
+    
+    //alokacija mem na cpu
+    float* h_A = (float*)malloc(velicinaMatrice);
+    float primer[5][5] = {
+        {12.5f,  2.0f,  3.0f,  4.0f,  5.0f},
+        { 6.0f,  4.2f,  7.0f,  8.0f,  9.0f},
+        { 1.0f,  2.0f,  1.8f,  3.0f,  4.0f}, 
+        { 5.0f,  6.0f,  7.0f,  9.0f,  8.0f},
+        { 0.5f,  1.0f,  2.0f,  3.0f,  3.4f}  
+    };
+    // iz 2d u 1d zbog CUDA cores
+    for (int r = 0; r < n; r++){
+        for (int k = 0; k < n; k++){
+            h_A[r*n+k] = primer[r][k];
+        }
+    }
+
+    int brojBlokova = (n+velicina_bloka-1) / velicina_bloka;
+    //alokacije memorije na gpu
+    cudaMalloc((void**)&d_A, velicinaMatrice);
+    cudaMalloc((void**)&d_blokMinimum, brojBlokova*sizeof(float));
+    cudaMalloc((void**)&d_pomocniNiz, brojBlokova*sizeof(float));
+
+    cudaMemcpy(d_A,h_A, velicinaMatrice, cudaMemcpyHostToDevice);
+    midElDijagonaleRedukcijom<<<brojBlokova, velicinaBloka>>>(d_A, d_blokMinimum, int n)
+    cudaDeviceSynchronize();
+
+    int preostaloElemenata = brojBlokova;
+    float* d_ulaz = d_blokMinimum;
+    float* d_izlaz = d_pomocniNiz;
+    
+    while (preostaloElemenata > 1){
+        int noviBrojBlokova = (preostaloElemenata+velicinaBloka-1)/velicinaBloka;
+        ukolikoJeVelicinaMatriceVecaOdJednogBloka<<<noviBrojBlokova, velicinaBloka>>>(d_ulaz, d_izlaz, preostaloElemenata);
+        cudaDeviceSynchronize();
+        preostaloElemenata = noviBrojBlokova;
+        float* temp = d_ulaz;
+        d_ulaz = d_izlaz;
+        d_izlaz = temp;
+    }
+
+    float* h_minEl = 0.0f;
+    cudaMemcpy(&h_minEl, d_ulaz, sizeof(float), cudaMemcpyDeviceToHost);
+
+    printf("Minimalni element na glavnoj dijagonali je: %.2f\n", h_minEl)
+
+    cudaFree(d_A);
+    cudaFree(d_blockMinimum);
+    cudaFree(d_pomocniNiz);
+    free(h_A);
+
+    return 0;
+}
